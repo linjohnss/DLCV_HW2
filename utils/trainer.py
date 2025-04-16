@@ -30,7 +30,6 @@ MODEL_DICT = {
     "faster_rcnn_resnest50_fpn": FasterRCNN_ResNest50_FPN,
     "faster_rcnn_resnext50_fpn": FasterRCNN_ResNext50_FPN,
     "faster_rcnn_mobilenetv3_large_fpn": FasterRCNN_MobileNetV3_Large_FPN,
-    "faster_rcnn_mobilenetv3_large_320_fpn": FasterRCNN_MobileNetV3_Large_320_FPN,
     "faster_rcnn_custom": CustomFasterRCNN,
 }
 
@@ -64,38 +63,52 @@ class Trainer:
         ])
 
         self.train_loader = DataLoader(
-            COCODataset(args.data_dir, mode='train', transform=self.transform_train),
+            COCODataset(
+                args.data_dir,
+                mode='train',
+                transform=self.transform_train
+            ),
             batch_size=args.batch_size,
             shuffle=True,
             num_workers=16,
             pin_memory=True,
-            collate_fn=collate_fn
+            collate_fn=collate_fn,
         )
         self.valid_loader = DataLoader(
-            COCODataset(args.data_dir, mode='valid', transform=self.transform_val),
+            COCODataset(
+                args.data_dir,
+                mode='valid',
+                transform=self.transform_val
+            ),
             batch_size=args.batch_size,
             shuffle=False,
             num_workers=16,
             pin_memory=True,
-            collate_fn=collate_fn
+            collate_fn=collate_fn,
         )
         self.test_loader = DataLoader(
-            COCOTestDataset(args.data_dir, mode='test', transform=self.transform_val),
+            COCOTestDataset(
+                args.data_dir,
+                mode='test',
+                transform=self.transform_val
+            ),
             batch_size=args.batch_size,
             shuffle=False,
             num_workers=16,
             pin_memory=True,
-            collate_fn=collate_fn
+            collate_fn=collate_fn,
         )
 
         box_score_threshold = 0.5
         if args.eval_only:
             box_score_threshold = 0.7
 
-        self.model = MODEL_DICT[args.model](
+        model_class = MODEL_DICT[args.model]
+        model_instance = model_class(
             box_score_threshold=box_score_threshold,
             num_classes=11,
-        ).to(args.device)
+        )
+        self.model = model_instance.to(args.device)
 
         total_params = sum(p.numel() for p in self.model.parameters())
         print(f"Total parameters: {total_params/1e6:.10f}M")
@@ -153,9 +166,15 @@ class Trainer:
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
 
-                train_losses["cls_loss"].append(loss_dict["loss_classifier"].item())
-                train_losses["box_loss"].append(loss_dict["loss_box_reg"].item())
-                train_losses["obj_loss"].append(loss_dict["loss_objectness"].item())
+                train_losses["cls_loss"].append(
+                    loss_dict["loss_classifier"].item()
+                )
+                train_losses["box_loss"].append(
+                    loss_dict["loss_box_reg"].item()
+                )
+                train_losses["obj_loss"].append(
+                    loss_dict["loss_objectness"].item()
+                )
                 train_losses["rpn_box_loss"].append(
                     loss_dict["loss_rpn_box_reg"].item()
                 )
@@ -167,11 +186,12 @@ class Trainer:
             map_result = self.validate(self.valid_loader)
 
             # print log
-            print(
-                f"Epoch [{epoch+1}/{self.args.epochs}], "
-                f"Loss: {np.mean(train_losses['total_loss']):.4f}, "
-                f"mAP: {map_result['map']:.4f}"
+            epoch_str = (
+                "Epoch [{}/{}], ".format(epoch + 1, self.args.epochs) +
+                "Loss: {:.4f}, ".format(np.mean(train_losses['total_loss'])) +
+                "mAP: {:.4f}".format(map_result['map'])
             )
+            print(epoch_str)
 
             if map_result["map"] > self.best_accuracy:
                 ckpt_path = os.path.join(
@@ -179,7 +199,8 @@ class Trainer:
                     "best_model.pth"
                 )
                 torch.save(self.model.state_dict(), ckpt_path)
-                print(f"Saved best model to {ckpt_path}")
+                save_str = "Saved best model to {}".format(ckpt_path)
+                print(save_str)
                 self.best_accuracy = map_result["map"]
 
             # write to tensorboard
@@ -228,61 +249,81 @@ class Trainer:
 
     def eval(self):
         """Evaluate the model on test set."""
-        ckpt_path = os.path.join(self.args.output_dir, "best_model.pth")
-        if os.path.exists(ckpt_path):
-            self.model.load_state_dict(
-                torch.load(ckpt_path, map_location=self.args.device)
-            )
-            print(f"Loaded checkpoint from {ckpt_path}")
-        else:
-            print(
-                f"Checkpoint {ckpt_path} not found. Exiting evaluation."
-            )
+        # Load model
+        eval_ckpt = os.path.join(self.args.output_dir, "best_model.pth")
+        if not os.path.exists(eval_ckpt):
+            print(f"Checkpoint {eval_ckpt} not found. Exiting evaluation.")
             return
 
-        self.model.eval()
-        val_preds = []
-        val_labels = []
+        self.model.load_state_dict(
+            torch.load(eval_ckpt, map_location=self.args.device)
+        )
+        print(f"Loaded checkpoint from {eval_ckpt}")
 
+        # Initialize evaluation results
+        eval_preds = []
+        eval_labels = []
+        self.model.eval()
+
+        # Process test data
         with torch.no_grad():
             for images, idx in tqdm(
                 self.test_loader,
-                desc="Testing",
-                unit="batch",
+                desc="Evaluating",
+                unit="batch"
             ):
-                images = list(image.to(self.args.device) for image in images)
+                images = [image.to(self.args.device) for image in images]
                 pred = self.model(images)
 
                 for i, p in zip(idx, pred):
+                    # Process predictions
                     digits = []
                     for j in range(len(p["boxes"])):
-                        x_min, y_min, x_max, y_max = p["boxes"][j].cpu().tolist()
-
-                        pred_dict = {
+                        x_min, y_min, x_max, y_max = (
+                            p["boxes"][j].cpu().tolist()
+                        )
+                        eval_preds.append({
                             "image_id": i + 1,
-                            "bbox": [x_min, y_min, x_max - x_min, y_max - y_min],
+                            "bbox": [
+                                x_min,
+                                y_min,
+                                x_max - x_min,
+                                y_max - y_min
+                            ],
                             "score": p["scores"][j].item(),
                             "category_id": p["labels"][j].item(),
-                        }
-                        val_preds.append(pred_dict)
+                        })
+                        digits.append({
+                            "x_min": x_min,
+                            "val": p["labels"][j].item()
+                        })
 
-                        digits.append({"x_min": x_min, "val": p["labels"][j].item()})
-
-                    if len(digits) > 0:
+                    # Combine digits
+                    if digits:
                         digits.sort(key=lambda d: d["x_min"])
-                        pred_val = int("".join(str(d["val"] - 1) for d in digits))
+                        pred_val = int(
+                            "".join(
+                                str(d["val"] - 1) for d in digits
+                            )
+                        )
                     else:
                         pred_val = -1
+                    eval_labels.append([i + 1, pred_val])
 
-                    val_labels.append([i + 1, pred_val])
-
-        # save predictions
+        # Save results
         with open(os.path.join(self.args.output_dir, "pred.json"), "w") as f:
-            json.dump(val_preds, f, indent=4)
+            json.dump(eval_preds, f, indent=4)
 
-        df = pd.DataFrame(val_labels, columns=["image_id", "pred_label"])
+        df = pd.DataFrame(
+            eval_labels,
+            columns=["image_id", "pred_label"]
+        )
         df.to_csv(os.path.join(self.args.output_dir, "pred.csv"), index=False)
 
+        # Visualize results
+        self._visualize_predictions()
+
+    def _visualize_predictions(self):
         # Create grid plot of first 10 images with predictions
         plt.figure(figsize=(20, 10))
         for i in range(10):
@@ -292,7 +333,7 @@ class Trainer:
             # Convert to numpy for display
             image_np = image_tensor.permute(1, 2, 0).numpy()
             plt.imshow(image_np)
-            
+
             # Get model predictions for this image
             with torch.no_grad():
                 self.model.eval()
@@ -302,21 +343,41 @@ class Trainer:
                 boxes = pred[0]['boxes'].cpu().numpy()
                 scores = pred[0]['scores'].cpu().numpy()
                 labels = pred[0]['labels'].cpu().numpy()
-                
+
                 # Draw bounding boxes
                 for box, score, label in zip(boxes, scores, labels):
                     if score > 0.5:  # Only draw boxes with confidence > 0.5
                         x1, y1, x2, y2 = box
-                        rect = plt.Rectangle((x1, y1), x2-x1, y2-y1, 
-                                           fill=False, edgecolor='red', linewidth=2)
+                        rect = plt.Rectangle(
+                            (x1, y1),
+                            x2-x1,
+                            y2-y1,
+                            fill=False,
+                            edgecolor='red',
+                            linewidth=2
+                        )
                         plt.gca().add_patch(rect)
-                        plt.text(x1, y1, f'{label}:{score:.2f}', 
-                               color='red', fontsize=8, 
-                               bbox=dict(facecolor='white', alpha=0.5))
-            
+                        plt.text(
+                            x1,
+                            y1,
+                            f'{label}:{score:.2f}',
+                            color='red',
+                            fontsize=8,
+                            bbox=dict(facecolor='white', alpha=0.5)
+                        )
+
             plt.axis('off')
             plt.title(f'Image {i+1}')
         plt.tight_layout()
-        plt.savefig(os.path.join(self.args.output_dir, 'first_10_images_with_boxes.png'))
+        output_path = os.path.join(
+            self.args.output_dir,
+            'first_10_images_with_boxes.png'
+        )
+        plt.savefig(output_path)
         plt.close()
-        print(f"Grid plot of first 10 images with bounding boxes saved to {os.path.join(self.args.output_dir, 'first_10_images_with_boxes.png')}")
+
+        plot_str = (
+            "Grid plot of first 10 images with bounding boxes saved to "
+            "{}".format(output_path)
+        )
+        print(plot_str)
