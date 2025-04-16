@@ -1,20 +1,31 @@
+import json
 import os
+from typing import Dict, List, Tuple
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torchvision import transforms
 from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
-import pandas as pd
+from torchvision import transforms
 from torchmetrics.detection.mean_ap import MeanAveragePrecision
-import matplotlib.pyplot as plt
+from tqdm import tqdm
 
+from models.faster_rcnn import (
+    CustomFasterRCNN,
+    FasterRCNN_MobileNetV3_Large_320_FPN,
+    FasterRCNN_MobileNetV3_Large_FPN,
+    FasterRCNN_ResNest50_FPN,
+    FasterRCNN_ResNet50_FPN,
+    FasterRCNN_ResNext50_FPN,
+)
 from utils.dataloader import COCODataset, COCOTestDataset
-from models.faster_rcnn import FasterRCNN_ResNet50_FPN, FasterRCNN_ResNest50_FPN, FasterRCNN_ResNext50_FPN, FasterRCNN_MobileNetV3_Large_FPN, FasterRCNN_MobileNetV3_Large_320_FPN, CustomFasterRCNN
-import numpy as np
-import json
-model_dict = {
+
+
+MODEL_DICT = {
     "faster_rcnn": FasterRCNN_ResNet50_FPN,
     "faster_rcnn_resnest50_fpn": FasterRCNN_ResNest50_FPN,
     "faster_rcnn_resnext50_fpn": FasterRCNN_ResNext50_FPN,
@@ -23,19 +34,29 @@ model_dict = {
     "faster_rcnn_custom": CustomFasterRCNN,
 }
 
+
 def collate_fn(batch):
+    """Collate function for DataLoader."""
     return tuple(zip(*batch))
 
 
 class Trainer:
+    """Trainer class for object detection model."""
+
     def __init__(self, args):
+        """Initialize trainer with arguments."""
         self.args = args
         os.makedirs(args.output_dir, exist_ok=True)
 
         self.writer = SummaryWriter(log_dir=args.output_dir)
 
         self.transform_train = transforms.Compose([
-            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+            transforms.ColorJitter(
+                brightness=0.2,
+                contrast=0.2,
+                saturation=0.2,
+                hue=0.1
+            ),
             transforms.ToTensor(),
         ])
         self.transform_val = transforms.Compose([
@@ -66,12 +87,12 @@ class Trainer:
             pin_memory=True,
             collate_fn=collate_fn
         )
-        box_score_threshold = 0.5
 
+        box_score_threshold = 0.5
         if args.eval_only:
             box_score_threshold = 0.7
-        
-        self.model = model_dict[args.model](
+
+        self.model = MODEL_DICT[args.model](
             box_score_threshold=box_score_threshold,
             num_classes=11,
         ).to(args.device)
@@ -79,10 +100,10 @@ class Trainer:
         total_params = sum(p.numel() for p in self.model.parameters())
         print(f"Total parameters: {total_params/1e6:.10f}M")
 
-
-        
         self.optimizer = optim.AdamW(
-            self.model.parameters(), lr=args.lr, weight_decay=1e-2
+            self.model.parameters(),
+            lr=args.lr,
+            weight_decay=1e-2
         )
 
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -95,8 +116,8 @@ class Trainer:
         self.best_accuracy = 0.0
 
     def train(self):
+        """Train the model."""
         for epoch in range(self.args.epochs):
-
             train_losses = {
                 "cls_loss": [],
                 "box_loss": [],
@@ -114,19 +135,20 @@ class Trainer:
             ):
                 images = list(image.to(self.args.device) for image in images)
                 targets = [
-                    {k: v.to(self.args.device) for k, v in t.items()} for t in targets
+                    {k: v.to(self.args.device) for k, v in t.items()}
+                    for t in targets
                 ]
 
                 self.optimizer.zero_grad()
                 with torch.autocast("cuda"):
                     loss_dict = self.model(images, targets)
                     losses = sum(loss for loss in loss_dict.values())
-                    
 
                 self.scaler.scale(losses).backward()
                 self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(), 1.0
+                    self.model.parameters(),
+                    1.0
                 )  # Gradient Clipping
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
@@ -139,8 +161,6 @@ class Trainer:
                 )
                 train_losses["total_loss"].append(losses.item())
 
-
-
             self.scheduler.step()
 
             # validate
@@ -148,7 +168,9 @@ class Trainer:
 
             # print log
             print(
-                f"Epoch [{epoch+1}/{self.args.epochs}], Loss: {np.mean(train_losses['total_loss']):.4f}, mAP: {map_result['map']:.4f}"
+                f"Epoch [{epoch+1}/{self.args.epochs}], "
+                f"Loss: {np.mean(train_losses['total_loss']):.4f}, "
+                f"mAP: {map_result['map']:.4f}"
             )
 
             if map_result["map"] > self.best_accuracy:
@@ -161,30 +183,51 @@ class Trainer:
                 self.best_accuracy = map_result["map"]
 
             # write to tensorboard
-            self.writer.add_scalar("Loss/cls_loss", np.mean(train_losses["cls_loss"]), epoch)
-            self.writer.add_scalar("Loss/box_loss", np.mean(train_losses["box_loss"]), epoch)
-            self.writer.add_scalar("Loss/obj_loss", np.mean(train_losses["obj_loss"]), epoch)
-            self.writer.add_scalar("Loss/rpn_box_loss", np.mean(train_losses["rpn_box_loss"]), epoch)
-            self.writer.add_scalar("Loss/total_loss", np.mean(train_losses["total_loss"]), epoch)
+            self.writer.add_scalar(
+                "Loss/cls_loss",
+                np.mean(train_losses["cls_loss"]),
+                epoch
+            )
+            self.writer.add_scalar(
+                "Loss/box_loss",
+                np.mean(train_losses["box_loss"]),
+                epoch
+            )
+            self.writer.add_scalar(
+                "Loss/obj_loss",
+                np.mean(train_losses["obj_loss"]),
+                epoch
+            )
+            self.writer.add_scalar(
+                "Loss/rpn_box_loss",
+                np.mean(train_losses["rpn_box_loss"]),
+                epoch
+            )
+            self.writer.add_scalar(
+                "Loss/total_loss",
+                np.mean(train_losses["total_loss"]),
+                epoch
+            )
             self.writer.add_scalar("mAP", map_result["map"], epoch)
 
     def validate(self, loader):
+        """Validate the model."""
         self.model.eval()
         with torch.no_grad():
             map_metric = MeanAveragePrecision()
             for images, targets in loader:
                 images = list(image.to(self.args.device) for image in images)
                 targets = [
-                    {k: v.to(self.args.device) for k, v in t.items()} for t in targets
+                    {k: v.to(self.args.device) for k, v in t.items()}
+                    for t in targets
                 ]
                 pred = self.model(images)
                 map_metric.update(pred, targets)
-                
-                
-                
+
         return map_metric.compute()
-    
+
     def eval(self):
+        """Evaluate the model on test set."""
         ckpt_path = os.path.join(self.args.output_dir, "best_model.pth")
         if os.path.exists(ckpt_path):
             self.model.load_state_dict(
@@ -224,7 +267,7 @@ class Trainer:
                         val_preds.append(pred_dict)
 
                         digits.append({"x_min": x_min, "val": p["labels"][j].item()})
-                        
+
                     if len(digits) > 0:
                         digits.sort(key=lambda d: d["x_min"])
                         pred_val = int("".join(str(d["val"] - 1) for d in digits))
@@ -238,7 +281,7 @@ class Trainer:
             json.dump(val_preds, f, indent=4)
 
         df = pd.DataFrame(val_labels, columns=["image_id", "pred_label"])
-        df.to_csv(os.path.join(self.args.output_dir, "pred.csv"), index=False)        
+        df.to_csv(os.path.join(self.args.output_dir, "pred.csv"), index=False)
 
         # Create grid plot of first 10 images with predictions
         plt.figure(figsize=(20, 10))

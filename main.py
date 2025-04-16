@@ -8,10 +8,11 @@ from utils.trainer import Trainer
 
 
 def get_args():
+    """Parse command line arguments."""
     parser = argparse.ArgumentParser()
 
     # Model
-    parser.add_argument("--model", type=str, default="faster_rcnn")    
+    parser.add_argument("--model", type=str, default="faster_rcnn")
 
     # Hyperparameters
     parser.add_argument("--epochs", type=int, default=5)
@@ -41,6 +42,7 @@ def get_args():
 
 
 def main(args):
+    """Main training/evaluation function."""
     torch.manual_seed(20250416)
     torch.cuda.manual_seed_all(20250416)
     np.random.seed(20250416)

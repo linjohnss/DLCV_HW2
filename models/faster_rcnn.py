@@ -21,41 +21,6 @@ from torchvision.models import resnet50, ResNet50_Weights, resnext50_32x4d
 from torchvision.models.detection.backbone_utils import BackboneWithFPN
 from torchvision.ops import MultiScaleRoIAlign
 
-
-def ResNet50_FPN():
-    """
-    Load ResNet50 backbone with FPN.
-    """
-    # Load ResNet50 backbone
-    model = resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)
-    backbone = _resnet_fpn_extractor(model, 5, norm_layer=nn.BatchNorm2d)
-
-    return backbone
-
-
-def ResNeXt50_FPN():
-    """
-    Load ResNeXt50 backbone with FPN.
-    """
-    model = resnext50_32x4d(weights='IMAGENET1K_V1')
-    backbone = _resnet_fpn_extractor(model, 5, norm_layer=nn.BatchNorm2d)
-    return backbone
-
-
-def ResNest50_FPN():
-    torch.hub.list("zhanghang1989/ResNeSt", force_reload=True)
-    resnest = torch.hub.load("zhanghang1989/ResNeSt", "resnest50", pretrained=True)
-
-    backbone = BackboneWithFPN(
-        resnest,
-        return_layers={"layer1": "0", "layer2": "1", "layer3": "2", "layer4": "3"},
-        in_channels_list=[256, 512, 1024, 2048],
-        out_channels=256,
-        norm_layer=nn.BatchNorm2d,
-    )
-
-    return backbone
-
 def _adjust_anchors():
     anchor_sizes = ((16,), (32,), (64,), (128,), (256,))
     aspect_ratios = ((0.5, 1.0, 2.0),) * len(anchor_sizes)
